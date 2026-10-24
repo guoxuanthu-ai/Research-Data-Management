@@ -1,0 +1,86 @@
+import { useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import type { AuditLogDto, LifecycleRecordDto, RecordDto, StageKey, SubjectDetailDto, SubjectType } from '@rds/shared';
+import { lifecycleApi, subjectApi, userApi } from '../../api';
+import { useAuth } from '../../auth/AuthProvider';
+import { canEditOwned, canManage } from '../../auth/permissions';
+import { Button } from '../../components/ui/Button';
+import { Badge, EmptyState, ErrorState, Loading, PageHeader } from '../../components/ui/Feedback';
+import { Input, Select } from '../../components/ui/Form';
+import { ConfirmDialog, Modal } from '../../components/ui/Modal';
+import { Tabs } from '../../components/ui/Tabs';
+import { useToast } from '../../components/ui/Toast';
+import { useAsync } from '../../hooks/useAsync';
+import { formatDate, formatDateTime } from '../../utils/date';
+import { processForStage, stageEntries } from '../records/recordFormState';
+import { SubjectFormDialog } from './SubjectFormDialog';
+
+function valueOf(record: RecordDto | undefined, fieldId: string): string | undefined {
+  return record?.values.find((value) => value.fieldId === fieldId)?.value;
+}
+function displayValue(value: string | undefined, pending = '待补录') {
+  if (value === undefined || value === '') return <span className="font-normal text-ink-400">{pending}</span>;
+  return <span className="whitespace-pre-wrap break-words">{value}</span>;
+}
+function StageValues({ record, fields }: { record: RecordDto | undefined; fields: RecordDto['fields'] }) {
+  return <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{fields.slice().sort((a,b) => a.sortOrder-b.sortOrder).map((field) => <div key={field.id} className="rounded-lg bg-ink-50/70 p-3"><dt className="text-xs text-ink-400">{field.name}{field.unit && <span>（{field.unit}）</span>}</dt><dd className="mt-1 font-medium text-ink-800">{displayValue(valueOf(record, field.id))}</dd></div>)}</dl>;
+}
+
+export function SubjectDetailPage({ type }: { type: SubjectType }) {
+  const { id = '' } = useParams(); const navigate = useNavigate(); const { user } = useAuth(); const manager = canManage(user); const { toast } = useToast();
+  const label = type === 'experiment' ? '实验' : '产品'; const base = `/${type === 'product' ? 'products' : 'experiments'}`;
+  const { data: subject, loading, error, reload } = useAsync(() => subjectApi.detail(type, id), [type, id]);
+  const owners = useAsync(() => manager ? userApi.list({ pageSize: 100 }) : Promise.resolve(null), [manager]);
+  const [tab, setTab] = useState<'records' | StageKey>('records'); const [creator, setCreator] = useState(''); const [startDate, setStart] = useState(''); const [endDate, setEnd] = useState('');
+  const [selected, setSelected] = useState<LifecycleRecordDto | null>(null);
+  const [historyRecord, setHistoryRecord] = useState<LifecycleRecordDto | null>(null);
+  const history = useAsync(() => historyRecord ? lifecycleApi.history(historyRecord.id) : Promise.resolve(null), [historyRecord?.id]);
+  const [editing, setEditing] = useState(false); const [deleting, setDeleting] = useState<LifecycleRecordDto | null>(null); const [deleteSubject, setDeleteSubject] = useState(false); const [actionLoading, setActionLoading] = useState(false); const [exporting, setExporting] = useState(false);
+  const filtered = useMemo(() => subject?.lifecycles.filter((record) => (!creator || record.createdBy === creator) && (!startDate || record.createdAt.slice(0,10) >= startDate) && (!endDate || record.createdAt.slice(0,10) <= endDate)) ?? [], [subject, creator, startDate, endDate]);
+  const availableStages = useMemo(() => subject ? stageEntries(subject.template.processes) : [], [subject]);
+  if (loading) return <><PageHeader title={`${label}详情`} /><div className="card"><Loading rows={8} /></div></>;
+  if (error || !subject) return <ErrorState error={error ?? `${label}不存在`} retry={() => void reload()} />;
+  const activeRecords = filtered.filter((record) => !record.deletedAt); const deletedRecords = filtered.filter((record) => record.deletedAt);
+  const exportOne = async () => { setExporting(true); try { await subjectApi.exportOne(type, subject.id); toast('导出文件已开始下载'); } catch (cause) { toast(cause instanceof Error ? cause.message : '导出失败', 'error'); } finally { setExporting(false); } };
+  const removeRecord = async () => { if (!deleting) return; setActionLoading(true); try { await lifecycleApi.remove(deleting.id, deleting.version); toast('整条生命周期记录已删除'); setDeleting(null); setSelected(null); await reload(); } catch (cause) { toast(cause instanceof Error ? cause.message : '删除失败', 'error'); } finally { setActionLoading(false); } };
+  const restoreRecord = async (record: LifecycleRecordDto) => { try { await lifecycleApi.restore(record.id, record.version); toast('记录已恢复'); await reload(); } catch (cause) { toast(cause instanceof Error ? cause.message : '恢复失败', 'error'); } };
+  const removeSubject = async () => { setActionLoading(true); try { await subjectApi.remove(type, subject.id, subject.version); toast(`${label}已删除`); navigate(base); } catch (cause) { toast(cause instanceof Error ? cause.message : '删除失败', 'error'); setActionLoading(false); } };
+  const restoreSubject = async () => { setActionLoading(true); try { await subjectApi.restore(type, subject.id, subject.version); toast(`${label}已恢复`); await reload(); } catch (cause) { toast(cause instanceof Error ? cause.message : '恢复失败', 'error'); } finally { setActionLoading(false); } };
+  const editRecord = (record: LifecycleRecordDto) => navigate(`${base}/${subject.id}/entry?lifecycle=${record.id}`);
+  const actions = (record: LifecycleRecordDto) => <LifecycleActions record={record} canEdit={canEditOwned(user, record.createdBy)} manager={manager} onOpen={() => setSelected(record)} onHistory={() => setHistoryRecord(record)} onEdit={() => editRecord(record)} onDelete={() => setDeleting(record)} />;
+  return <>
+    <PageHeader back={() => navigate(base)} eyebrow={subject.code || (type === 'experiment' ? 'EXPERIMENT' : 'PRODUCT')} title={subject.name} description={subject.purpose || subject.remark || '按生命周期关联实际工序数据，可持续补录并对比。'} actions={<>{subject.deletedAt ? <Button icon="restore" loading={actionLoading} onClick={() => void restoreSubject()}>恢复{label}</Button> : <><Button variant="secondary" icon="download" loading={exporting} onClick={() => void exportOne()}>导出</Button>{canEditOwned(user, subject.createdBy) && <Button variant="secondary" icon="edit" onClick={() => setEditing(true)}>编辑</Button>}{manager && <Button variant="secondary" icon="template" onClick={() => navigate(`/templates/${subject.templateId}/edit`)}>更新录入结构</Button>}<Button icon="plus" onClick={() => navigate(`${base}/${subject.id}/entry`)}>录入数据</Button></>}</>} />
+    <div className="card mb-5 grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-5"><div><div className="text-xs text-ink-400">负责人</div><div className="mt-1.5 font-medium">{subject.ownerName}</div></div><div><div className="text-xs text-ink-400">{type === 'experiment' ? '实验日期' : '创建日期'}</div><div className="mt-1.5 font-medium mono">{formatDate(subject.date)}</div></div><div><div className="text-xs text-ink-400">固定录入模板</div><div className="mt-1.5 font-medium">{subject.templateName} · v{subject.templateVersion}</div></div><div><div className="text-xs text-ink-400">创建人</div><div className="mt-1.5 font-medium">{subject.creatorName}</div></div><div><div className="text-xs text-ink-400">最近更新</div><div className="mt-1.5 font-medium mono">{formatDateTime(subject.updatedAt)}</div></div>{subject.deletedAt && <div className="rounded-lg bg-danger-50 p-3 text-sm text-danger-700 sm:col-span-2 lg:col-span-5">该{label}已于 {formatDateTime(subject.deletedAt)} 删除，当前为只读状态。</div>}</div>
+    <section className="card overflow-hidden">
+      <div className="flex flex-col gap-3 border-b border-ink-100 p-4 lg:flex-row lg:items-center lg:justify-between"><div className="grid flex-1 gap-2 sm:grid-cols-3 lg:max-w-2xl"><Select value={creator} onChange={(e) => setCreator(e.target.value)} aria-label="录入人筛选"><option value="">全部录入人</option>{Array.from(new Map(subject.lifecycles.map((record) => [record.createdBy, record.creatorName]))).map(([key, name]) => <option key={key} value={key}>{name}</option>)}</Select><Input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} aria-label="记录开始日期" /><Input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} aria-label="记录结束日期" /></div>{manager && <Button variant="ghost" onClick={() => setDeleteSubject(true)} className="self-start text-danger-700" icon="trash">删除{label}</Button>}</div>
+      <Tabs value={tab} onChange={(value) => setTab(value as typeof tab)} items={[{ value: 'records', label: '按记录查看', count: activeRecords.length }, ...availableStages.map(({ key, label: stageLabel }) => ({ value: key, label: `${stageLabel}对比`, count: activeRecords.filter((record) => record.stages[key]).length }))]} />
+      {!activeRecords.length ? <EmptyState icon="edit" title={subject.lifecycles.length ? '当前筛选下暂无记录' : '还没有生命周期数据'} description={subject.lifecycles.length ? '尝试调整日期、录入人筛选。' : '新建一条记录，可先完成部分工序，之后再补录其他工序。'} action={!subject.deletedAt && <Button icon="plus" onClick={() => navigate(`${base}/${subject.id}/entry`)}>开始录入</Button>} /> : tab === 'records' ? <div className="divide-y divide-ink-100">{activeRecords.map((record) => {
+        const complete = availableStages.filter(({ key }) => record.stages[key]).length;
+        return <article key={record.id} className="p-4 sm:p-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><button className="flex min-w-0 flex-1 flex-col items-start gap-2 text-left sm:flex-row sm:items-center" onClick={() => setSelected(record)}><span className="flex h-9 min-w-16 items-center justify-center rounded-lg bg-brand-50 px-3 font-semibold text-brand-800">#{record.recordNo}</span><span><span className="block font-medium text-ink-900">生命周期记录 #{record.recordNo}</span><span className="mt-1 block text-xs text-ink-400">{record.creatorName} · {formatDateTime(record.updatedAt)}</span></span><Badge tone={complete === availableStages.length ? 'green' : 'amber'}>{complete}/{availableStages.length} 工序{complete < availableStages.length ? ' · 待补录' : '已完整'}</Badge></button>{actions(record)}</div><div className="mt-3 grid gap-2 sm:grid-cols-3">{availableStages.map(({ key, label: stageLabel }) => <button key={key} onClick={() => setSelected(record)} className="rounded-lg bg-ink-50 px-3 py-2 text-left text-sm text-ink-600 hover:bg-brand-50"><span className={record.stages[key] ? 'text-brand-700' : 'text-ink-400'}>{record.stages[key] ? '●' : '○'} {stageLabel}</span><span className="float-right text-xs">{record.stages[key] ? `${record.stages[key]?.values.length} 项` : '待补录'}</span></button>)}</div></article>;
+      })}</div> : <ProcessComparison records={activeRecords} stage={tab} subject={subject} onOpen={setSelected} />}
+      {manager && deletedRecords.length > 0 && <div className="border-t border-ink-100 bg-ink-50/40 p-5"><h3 className="mb-3 text-sm font-semibold text-ink-600">已删除记录（{deletedRecords.length}）</h3>{deletedRecords.map((record) => <div key={record.id} className="flex min-h-touch items-center justify-between gap-3 border-t border-ink-100 py-2"><span className="text-sm text-ink-500">#{record.recordNo} · {record.creatorName} · {formatDateTime(record.deletedAt)}</span><Button variant="secondary" icon="restore" onClick={() => void restoreRecord(record)}>恢复</Button></div>)}</div>}
+    </section>
+    <SubjectFormDialog open={editing} onClose={() => setEditing(false)} type={type} subject={subject} users={owners.data?.items ?? []} onSaved={() => void reload()} />
+    <Modal open={!!selected} onClose={() => setSelected(null)} title={`生命周期记录 #${selected?.recordNo ?? ''}`} description="同一页面查看全部工序；未完成的工序可直接继续补录。" size="xl" footer={selected && <><Button variant="secondary" onClick={() => setHistoryRecord(selected)}>查看历史</Button>{canEditOwned(user, selected.createdBy) && <Button icon="edit" onClick={() => editRecord(selected)}>继续录入 / 编辑</Button>}</>}>
+      {selected && <div className="space-y-5"><div className="flex flex-wrap items-center gap-3 text-sm text-ink-500"><span>{selected.creatorName}</span><span>更新于 {formatDateTime(selected.updatedAt)}</span><Badge tone={availableStages.every(({ key }) => selected.stages[key]) ? 'green' : 'amber'}>{availableStages.filter(({ key }) => selected.stages[key]).length}/{availableStages.length} 工序已录入</Badge></div>{availableStages.map(({ key, label: stageLabel }) => {
+        const record = selected.stages[key]; const templateProcess = processForStage(subject.template.processes, key); const fields = record?.fields ?? templateProcess?.fields ?? [];
+        return <section key={key} className="overflow-hidden rounded-xl border border-ink-100"><div className="flex items-center justify-between bg-ink-50/60 px-4 py-3"><h3 className="font-semibold">{stageLabel}</h3><Badge tone={record ? 'green' : 'amber'}>{record ? '已录入' : '工序未录入 · 待补录'}</Badge></div><div className="p-4">{fields.length ? <StageValues record={record} fields={fields} /> : <p className="text-sm text-ink-400">该工序暂无字段</p>}</div></section>;
+      })}</div>}
+    </Modal>
+    <Modal open={!!historyRecord} onClose={() => setHistoryRecord(null)} title="生命周期记录修改历史" description={`记录 #${historyRecord?.recordNo ?? ''} · 所有变更均保留操作人和前后快照`} size="lg">{history.loading ? <Loading /> : history.error ? <ErrorState error={history.error} retry={() => void history.reload()} /> : !history.data?.length ? <EmptyState icon="clock" title="暂无修改历史" description="该记录尚未发生修改。" /> : <div className="space-y-4">{history.data.map((log: AuditLogDto) => <div key={log.id} className="rounded-xl border border-ink-100 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><Badge tone="blue">{log.action}</Badge><span className="ml-2 text-sm font-medium">{log.actorName}</span></div><span className="text-xs text-ink-400">{formatDateTime(log.createdAt)}</span></div><div className="mt-3 grid gap-3 md:grid-cols-2"><pre className="scrollbar-thin max-h-48 overflow-auto rounded-lg bg-ink-50 p-3 text-xs text-ink-500">{JSON.stringify(log.before, null, 2) ?? '无'}</pre><pre className="scrollbar-thin max-h-48 overflow-auto rounded-lg bg-brand-50 p-3 text-xs text-brand-900">{JSON.stringify(log.after, null, 2) ?? '无'}</pre></div></div>)}</div>}</Modal>
+    <ConfirmDialog open={!!deleting} onClose={() => setDeleting(null)} onConfirm={() => void removeRecord()} loading={actionLoading} title={`删除生命周期记录 #${deleting?.recordNo ?? ''}？`} description="该记录下的全部工序将一起软删除，管理员可以恢复。" /><ConfirmDialog open={deleteSubject} onClose={() => setDeleteSubject(false)} onConfirm={() => void removeSubject()} loading={actionLoading} title={`删除整个${label}？`} description="此操作会删除主体并保留审计记录。请确认不再需要查看或录入该主体的数据。" />
+  </>;
+}
+
+function ProcessComparison({ records, stage, subject, onOpen }: { records: LifecycleRecordDto[]; stage: StageKey; subject: SubjectDetailDto; onOpen: (record: LifecycleRecordDto) => void }) {
+  const process = processForStage(subject.template.processes, stage);
+  const fields = process?.fields.slice().sort((a,b) => a.sortOrder-b.sortOrder) ?? [];
+  return <div className="scrollbar-thin overflow-x-auto"><table className="w-full min-w-max border-collapse text-left text-sm"><thead className="bg-ink-50 text-xs text-ink-500"><tr><th className="sticky left-0 z-10 min-w-28 border-b border-ink-100 bg-ink-50 px-4 py-3">记录序号</th>{fields.map((field) => <th key={field.id} className="min-w-40 border-b border-ink-100 px-4 py-3 font-medium">{field.name}{field.unit && <span className="block mt-0.5 font-normal text-ink-400">{field.unit}</span>}</th>)}</tr></thead><tbody className="divide-y divide-ink-100">{records.map((lifecycle) => {
+    const record = lifecycle.stages[stage];
+    return <tr key={lifecycle.id} className="hover:bg-brand-50/30"><td className="sticky left-0 z-10 border-r border-ink-100 bg-white px-4 py-3"><button className="font-semibold text-brand-700 hover:underline" onClick={() => onOpen(lifecycle)}>#{lifecycle.recordNo}</button><span className="block mt-1 text-xs font-normal text-ink-400">{lifecycle.creatorName}</span></td>{fields.map((field) => <td key={field.id} className="max-w-72 border-r border-ink-50 px-4 py-3 align-top">{record ? displayValue(valueOf(record, field.id)) : <Badge tone="amber">工序未录入</Badge>}</td>)}</tr>;
+  })}</tbody></table>{!fields.length && <p className="p-5 text-sm text-ink-400">当前模板中该工序没有字段。</p>}</div>;
+}
+
+function LifecycleActions({ record, canEdit, manager, onOpen, onHistory, onEdit, onDelete }: { record: LifecycleRecordDto; canEdit: boolean; manager: boolean; onOpen: () => void; onHistory: () => void; onEdit: () => void; onDelete: () => void }) {
+  return <div className="flex flex-wrap gap-1"><Button variant="ghost" className="min-h-9 px-2 text-xs" onClick={onOpen}>查看全部</Button><Button variant="ghost" className="min-h-9 px-2 text-xs" onClick={onHistory}>历史</Button>{canEdit && <Button variant="ghost" className="min-h-9 px-2 text-xs" onClick={onEdit}>继续录入</Button>}{manager && <Button variant="ghost" className="min-h-9 px-2 text-xs text-danger-700" onClick={onDelete}>删除</Button>}<span className="sr-only">{record.id}</span></div>;
+}

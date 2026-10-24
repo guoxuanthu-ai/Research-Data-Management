@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { @apply border-ink-100; }
+  html { @apply bg-canvas antialiased; }
+  body { @apply m-0 min-w-[320px] font-sans text-sm text-ink-900; }
+  button, input, select, textarea { font: inherit; }
+  button, a, input, select, textarea { @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2; }
+  ::selection { @apply bg-brand-100 text-brand-900; }
+}
+
+@layer components {
+  .card { @apply rounded-2xl border border-ink-100 bg-white shadow-card; }
+  .page-title { @apply text-2xl font-semibold tracking-tight text-ink-950 sm:text-[28px]; }
+  .section-title { @apply text-base font-semibold text-ink-900; }
+  .muted { @apply text-ink-500; }
+  .mono { @apply tabular-nums; }
+  .scrollbar-thin { scrollbar-width: thin; scrollbar-color: theme('colors.ink.200') transparent; }
+}

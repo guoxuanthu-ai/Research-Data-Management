@@ -1,0 +1,28 @@
+{
+  "name": "research-data-system",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/web", "apps/api", "packages/shared", "packages/core"],
+  "engines": { "node": ">=22.14 <25", "npm": ">=11" },
+  "scripts": {
+    "dev": "npm run dev:api & npm run dev:web",
+    "dev:web": "npm run dev --workspace @rds/web",
+    "dev:api": "npm run dev --workspace @rds/api",
+    "build": "npm run build --workspace @rds/shared && npm run build --workspace @rds/core && npm run build --workspace @rds/api && npm run build --workspace @rds/web",
+    "typecheck": "npm run typecheck --workspace @rds/shared && npm run typecheck --workspace @rds/core && npm run typecheck --workspace @rds/api && npm run typecheck --workspace @rds/web",
+    "test": "vitest run",
+    "test:core": "vitest run tests/core",
+    "test:api": "vitest run tests/api",
+    "db:migrate": "npm run db:migrate --workspace @rds/api",
+    "db:seed": "npm run db:seed --workspace @rds/api",
+    "start:api": "npm run start --workspace @rds/api",
+    "audit:deps": "npm audit --omit=dev"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

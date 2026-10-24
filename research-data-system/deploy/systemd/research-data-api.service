@@ -1,0 +1,25 @@
+[Unit]
+Description=Research Data System API
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rds
+Group=rds
+WorkingDirectory=/opt/research-data-system/apps/api
+EnvironmentFile=/etc/rds/api.env
+Environment=NODE_ENV=production
+Environment=TZ=UTC
+ExecStart=/usr/bin/node --import /opt/research-data-system/apps/api/register.mjs /opt/research-data-system/apps/api/dist/apps/api/src/index.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/research-data-system/apps/api
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

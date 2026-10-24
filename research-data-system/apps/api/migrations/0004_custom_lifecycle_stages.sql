@@ -1,0 +1,1 @@
+ALTER TABLE records MODIFY COLUMN stage_key VARCHAR(100) NULL;
